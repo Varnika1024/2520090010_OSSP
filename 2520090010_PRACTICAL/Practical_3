@@ -1,0 +1,46 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+void print_states(const char *stage) {
+    pid_t pid = getpid();
+    char command[128];
+    printf("\n=== Stage: %s ===\n", stage);
+    printf("PID: %d | PPID: %d\n", pid, getppid());
+    snprintf(command, sizeof(command), "ps -o pid,ppid,state,command -p %d", pid);
+    fflush(stdout);
+    system(command);
+}
+
+int main() {
+    print_states("Before fork (Parent)");
+
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        perror("Fork failed");
+        exit(1);
+    } else if (pid == 0) {
+        printf("\n=== Stage: Child Started (PID: %d) ===\n", getpid());
+        sleep(1); 
+        printf("Child exiting now...\n");
+        exit(0);
+    } else {
+        print_states("Parent Active while Child Runs");
+        
+        printf("\nParent sleeping to let child terminate first...\n");
+        sleep(3); 
+        
+        printf("\n=== Parent Checking Child Zombie State ===\n");
+        char zombie_cmd[128];
+        snprintf(zombie_cmd, sizeof(zombie_cmd), "ps -o pid,ppid,state,command -p %d", pid);
+        system(zombie_cmd);
+
+        wait(NULL);
+        print_states("Parent After wait() (Child Terminated & Reaped)");
+    }
+
+    return 0;
+}
