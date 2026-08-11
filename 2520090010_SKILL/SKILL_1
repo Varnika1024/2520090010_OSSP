@@ -1,0 +1,44 @@
+cat << 'EOF' > wait_demo.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+int main() {
+    pid_t pid;
+    int status;
+
+    printf("=== Parent-Child Synchronization Demo ===\n");
+    pid = fork();
+
+    if (pid < 0) {
+        perror("Fork failed");
+        return 1;
+    } else if (pid == 0) {
+        // Child Process
+        printf("[CHILD] Child (PID: %d) is performing work...\n", getpid());
+        sleep(2); // Simulate work
+        printf("[CHILD] Child work complete. Exiting with status 42.\n");
+        exit(42);
+    } else {
+        
+        printf("[PARENT] Parent (PID: %d) waiting for Child (PID: %d)...\n", getpid(), pid);
+        
+        pid_t terminated_pid = waitpid(pid, &status, 0);
+
+        if (WIFEXITED(status)) {
+            printf("[PARENT] Child PID %d terminated normally with exit status: %d\n", 
+                   terminated_pid, WEXITSTATUS(status));
+        } else {
+            printf("[PARENT] Child terminated abnormally.\n");
+        }
+        printf("[PARENT] Synchronization complete. Parent exiting.\n");
+    }
+
+    return 0;
+}
+EOF
+
+gcc -Wall wait_demo.c -o wait_demo
+./wait_demo
