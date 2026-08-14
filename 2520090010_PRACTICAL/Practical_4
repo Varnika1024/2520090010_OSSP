@@ -1,0 +1,54 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+int main() {
+    pid_t c1, c2;
+    int status;
+    char cmd[128];
+
+    c1 = fork();
+    if (c1 < 0) exit(1);
+    if (c1 == 0) {
+        printf("[Child 1] PID: %d sleeping for 1s (Exits early to become Zombie)\n", getpid());
+        sleep(1);
+        printf("[Child 1] Terminating now...\n");
+        exit(10);
+    }
+
+    c2 = fork();
+    if (c2 < 0) exit(1);
+    if (c2 == 0) {
+        printf("[Child 2] PID: %d sleeping for 4s (Longer task)\n", getpid());
+        sleep(4);
+        printf("[Child 2] Terminating now...\n");
+        exit(20);
+    }
+
+    printf("\n[Parent] Created Child 1 (PID: %d) and Child 2 (PID: %d)\n", c1, c2);
+    printf("[Parent] Sleeping 2s to allow Child 1 to terminate and enter Zombie state...\n");
+    sleep(2);
+
+    printf("\n=== Investigating Process Table for Zombie State ===\n");
+    snprintf(cmd, sizeof(cmd), "ps -o pid,ppid,state,command -p %d,%d", c1, c2);
+    system(cmd);
+
+    printf("\n=== Synchronizing with waitpid() specifically for Child 2 ===\n");
+    waitpid(c2, &status, 0);
+    if (WIFEXITED(status)) {
+        printf("[Parent] Reaped Child 2 (PID: %d) with exit status %d\n", c2, WEXITSTATUS(status));
+    }
+
+    printf("\n=== Synchronizing with wait() for Child 1 (Eliminating Zombie) ===\n");
+    pid_t reaped_pid = wait(&status);
+    if (WIFEXITED(status)) {
+        printf("[Parent] Reaped Child 1 (PID: %d) with exit status %d\n", reaped_pid, WEXITSTATUS(status));
+    }
+
+    printf("\n=== Final Process Table Check (All Zombies Cleared) ===\n");
+    system(cmd);
+
+    return 0;
+}
