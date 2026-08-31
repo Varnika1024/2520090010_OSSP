@@ -1,0 +1,64 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <termios.h>
+
+#define BUFFER_SIZE 1024
+
+void enable_raw_mode(struct termios *orig_termios)
+{
+    struct termios raw;
+    tcgetattr(STDIN_FILENO, orig_termios);
+    raw = *orig_termios;
+    raw.c_lflag &= ~(ECHO | ICANON);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
+
+void disable_raw_mode(struct termios *orig_termios)
+{
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, orig_termios);
+}
+
+int main()
+{
+    struct termios orig_termios;
+    char buffer[BUFFER_SIZE];
+    int index = 0;
+    char c;
+
+    enable_raw_mode(&orig_termios);
+
+    printf("myshell-raw> ");
+    fflush(stdout);
+
+    while (read(STDIN_FILENO, &c, 1) == 1)
+    {
+        if (c == '\n' || c == '\r')
+        {
+            buffer[index] = '\0';
+            printf("\r\nProcessed Buffer: %s\r\n", buffer);
+            break;
+        }
+        else if (c == 127 || c == '\b')
+        {
+            if (index > 0)
+            {
+                index--;
+                printf("\b \b");
+                fflush(stdout);
+            }
+        }
+        else
+        {
+            if (index < BUFFER_SIZE - 1)
+            {
+                buffer[index++] = c;
+                putchar(c);
+                fflush(stdout);
+            }
+        }
+    }
+
+    disable_raw_mode(&orig_termios);
+    return 0;
+}
