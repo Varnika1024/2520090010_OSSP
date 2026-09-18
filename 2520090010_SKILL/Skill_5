@@ -1,0 +1,99 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_TOKENS 32
+#define MAX_TOKEN_LEN 256
+
+void parse_quotes_and_expand(const char *input)
+{
+    char tokens[MAX_TOKENS][MAX_TOKEN_LEN];
+    int token_count = 0;
+    int i = 0;
+    int len = strlen(input);
+
+    while (i < len && token_count < MAX_TOKENS)
+    {
+        while (i < len && (input[i] == ' ' || input[i] == '\t'))
+        {
+            i++;
+        }
+        if (i >= len) break;
+
+        char current[MAX_TOKEN_LEN];
+        int c_idx = 0;
+
+        while (i < len && input[i] != ' ' && input[i] != '\t')
+        {
+            if (input[i] == '\'')
+            {
+                i++;
+                while (i < len && input[i] != '\'')
+                {
+                    current[c_idx++] = input[i++];
+                }
+                if (i < len && input[i] == '\'') i++;
+            }
+            else if (input[i] == '\"')
+            {
+                i++;
+                while (i < len && input[i] != '\"')
+                {
+                    if (input[i] == '$')
+                    {
+                        i++;
+                        char var_name[64];
+                        int v_idx = 0;
+                        while (i < len && ((input[i] >= 'A' && input[i] <= 'Z') || (input[i] >= 'a' && input[i] <= 'z') || (input[i] >= '0' && input[i] <= '9') || input[i] == '_'))
+                        {
+                            var_name[v_idx++] = input[i++];
+                        }
+                        var_name[v_idx] = '\0';
+                        char *val = getenv(var_name);
+                        if (val)
+                        {
+                            for (int k = 0; val[k] != '\0'; k++)
+                            {
+                                current[c_idx++] = val[k];
+                            }
+                        }
+                    }
+                    else
+                    {
+                        current[c_idx++] = input[i++];
+                    }
+                }
+                if (i < len && input[i] == '\"') i++;
+            }
+            else
+            {
+                current[c_idx++] = input[i++];
+            }
+        }
+
+        current[c_idx] = '\0';
+        strcpy(tokens[token_count++], current);
+    }
+
+    printf("Input:  %s\n", input);
+    printf("Tokens:\n");
+    for (int t = 0; t < token_count; t++)
+    {
+        printf("  [%d] %s\n", t, tokens[t]);
+    }
+    printf("\n");
+}
+
+int main()
+{
+    setenv("USER_NAME", "Alice", 1);
+    setenv("DIR", "OS_Lab", 1);
+
+    printf("=== Testing Single & Double Quote Parsing ===\n\n");
+
+    parse_quotes_and_expand("echo 'Hello $USER_NAME literal' regular_arg");
+    parse_quotes_and_expand("echo \"Hello $USER_NAME from $DIR\" regular_arg");
+    parse_quotes_and_expand("echo 'preserve spaces    here' \"expand $USER_NAME and preserve spaces\"");
+
+    return 0;
+}
