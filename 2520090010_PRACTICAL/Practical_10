@@ -1,0 +1,85 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <string.h>
+
+#define ORIG_FILE "orig_file.txt"
+#define HARD_LINK "hard_link.txt"
+#define SOFT_LINK "soft_link.txt"
+#define MMAP_FILE "mmap_demo.txt"
+#define FILE_SIZE 64
+
+void print_inode_info(const char *filename)
+{
+    struct stat st;
+    if (lstat(filename, &st) == 0)
+    {
+        printf("%-16s | Inode: %-10llu | Links: %-4hu | Size: %-5lld bytes\n",
+               filename, (unsigned long long)st.st_ino, st.st_nlink, (long long)st.st_size);
+    }
+}
+
+void inode_and_links_demo()
+{
+    printf("=== Part 1: Inodes, Hard Links, and Symbolic Links ===\n\n");
+
+    int fd = open(ORIG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    write(fd, "Operating Systems Lab Inode Test Data\n", 39);
+    close(fd);
+
+    printf("1. Original file created:\n");
+    print_inode_info(ORIG_FILE);
+
+    link(ORIG_FILE, HARD_LINK);
+    printf("\n2. Hard link created (points to identical inode, link count increases):\n");
+    print_inode_info(ORIG_FILE);
+    print_inode_info(HARD_LINK);
+
+    symlink(ORIG_FILE, SOFT_LINK);
+    printf("\n3. Symbolic link created (allocates a new inode pointing to pathname):\n");
+    print_inode_info(ORIG_FILE);
+    print_inode_info(HARD_LINK);
+    print_inode_info(SOFT_LINK);
+
+    unlink(HARD_LINK);
+    unlink(SOFT_LINK);
+    unlink(ORIG_FILE);
+    printf("\nCleaned up link files.\n\n");
+}
+
+void mmap_io_demo()
+{
+    printf("=== Part 2: Memory-Mapped File I/O (mmap) ===\n\n");
+
+    int fd = open(MMAP_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    ftruncate(fd, FILE_SIZE);
+
+    char *mapped = (char *)mmap(NULL, FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+    strcpy(mapped, "Written directly into memory via mmap()!");
+    msync(mapped, FILE_SIZE, MS_SYNC);
+
+    printf("Data written to mmap region: \"%s\"\n", mapped);
+
+    munmap(mapped, FILE_SIZE);
+    close(fd);
+
+    fd = open(MMAP_FILE, O_RDONLY);
+    char verify_buf[FILE_SIZE];
+    read(fd, verify_buf, sizeof(verify_buf));
+    close(fd);
+
+    printf("Read back from disk file:    \"%s\"\n", verify_buf);
+
+    unlink(MMAP_FILE);
+}
+
+int main()
+{
+    inode_and_links_demo();
+    mmap_io_demo();
+    return 0;
+}
