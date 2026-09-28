@@ -1,0 +1,197 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <limits.h>
+
+char prev_dir[PATH_MAX] = "";
+
+typedef int (*builtin_func_t)(char *args[]);
+
+struct BuiltinCommand
+{
+    const char *name;
+    builtin_func_t func;
+};
+
+int builtin_cd(char *args[])
+{
+    char current_cwd[PATH_MAX];
+    if (getcwd(current_cwd, sizeof(current_cwd)) == NULL)
+    {
+        perror("getcwd failed");
+        return 1;
+    }
+
+    char target[PATH_MAX];
+
+    if (!args[1] || strcmp(args[1], "~") == 0)
+    {
+        char *home = getenv("HOME");
+        if (!home)
+        {
+            fprintf(stderr, "cd: HOME not set\n");
+            return 1;
+        }
+        strncpy(target, home, sizeof(target) - 1);
+        target[sizeof(target) - 1] = '\0';
+    }
+    else if (strcmp(args[1], "-") == 0)
+    {
+        if (strlen(prev_dir) == 0)
+        {
+            fprintf(stderr, "cd: OLDPWD not set\n");
+            return 1;
+        }
+        strncpy(target, prev_dir, sizeof(target) - 1);
+        target[sizeof(target) - 1] = '\0';
+        printf("%s\n", target);
+    }
+    else
+    {
+        strncpy(target, args[1], sizeof(target) - 1);
+        target[sizeof(target) - 1] = '\0';
+    }
+
+    if (chdir(target) != 0)
+    {
+        perror("cd failed");
+        return 1;
+    }
+
+    strncpy(prev_dir, current_cwd, sizeof(prev_dir) - 1);
+    prev_dir[sizeof(prev_dir) - 1] = '\0';
+
+    char new_cwd[PATH_MAX];
+    getcwd(new_cwd, sizeof(new_cwd));
+    printf("[Built-in cd] Successfully moved to: %s\n", new_cwd);
+    return 0;
+}
+
+int builtin_pwd(char *args[])
+{
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) != NULL)
+    {
+        printf("[Built-in pwd] %s\n", cwd);
+        return 0;
+    }
+    perror("pwd failed");
+    return 1;
+}
+
+int builtin_export(char *args[])
+{
+    if (!args[1])
+    {
+        printf("export: usage: export KEY=VALUE\n");
+        return 1;
+    }
+
+    char temp[256];
+    strncpy(temp, args[1], sizeof(temp) - 1);
+    temp[sizeof(temp) - 1] = '\0';
+
+    char *eq = strchr(temp, '=');
+    if (!eq)
+    {
+        printf("export: invalid format, expected KEY=VALUE\n");
+        return 1;
+    }
+
+    *eq = '\0';
+    setenv(temp, eq + 1, 1);
+    printf("[Built-in export] %s=%s\n", temp, eq + 1);
+    return 0;
+}
+
+int builtin_echo(char *args[])
+{
+    int i = 1;
+    while (args[i])
+    {
+        printf("%s%s", args[i], args[i + 1] ? " " : "");
+        i++;
+    }
+    printf("\n");
+    return 0;
+}
+
+int builtin_help(char *args[])
+{
+    printf("[Built-in help] Available commands: cd, pwd, export, echo, help, exit\n");
+    return 0;
+}
+
+int builtin_exit(char *args[])
+{
+    printf("[Built-in exit] Exiting shell environment.\n");
+    return 0;
+}
+
+struct BuiltinCommand dispatch_table[] = {
+    {"cd", builtin_cd},
+    {"pwd", builtin_pwd},
+    {"export", builtin_export},
+    {"echo", builtin_echo},
+    {"help", builtin_help},
+    {"exit", builtin_exit},
+    {NULL, NULL}
+};
+
+int dispatch_builtin(char *tokens[])
+{
+    if (!tokens[0]) return -1;
+
+    for (int i = 0; dispatch_table[i].name != NULL; i++)
+    {
+        if (strcmp(tokens[0], dispatch_table[i].name) == 0)
+        {
+            return dispatch_table[i].func(tokens);
+        }
+    }
+    return -1;
+}
+
+int main()
+{
+    printf("=== Part 1: Advanced Directory Navigation & State Tracking ===\n\n");
+
+    char *cmd_pwd[] = {"pwd", NULL};
+    dispatch_builtin(cmd_pwd);
+
+    char *cmd_cd_up[] = {"cd", "..", NULL};
+    printf("\nExecuting: cd ..\n");
+    dispatch_builtin(cmd_cd_up);
+
+    char *cmd_cd_prev[] = {"cd", "-", NULL};
+    printf("\nExecuting: cd - (Navigate back to previous directory)\n");
+    dispatch_builtin(cmd_cd_prev);
+
+    char *cmd_cd_invalid[] = {"cd", "/non_existent_directory_xyz", NULL};
+    printf("\nExecuting: cd /non_existent_directory_xyz\n");
+    dispatch_builtin(cmd_cd_invalid);
+
+    printf("\n=== Part 2: Dispatch Table Execution & State Management ===\n\n");
+
+    char *cmd_export[] = {"export", "SESSION_ID=4096", NULL};
+    printf("Executing: export SESSION_ID=4096\n");
+    dispatch_builtin(cmd_export);
+
+    char *cmd_echo[] = {"echo", "Session", "active", "with", "dispatch", "table", NULL};
+    printf("\nExecuting: echo\n");
+    dispatch_builtin(cmd_echo);
+
+    char *cmd_help[] = {"help", NULL};
+    printf("\nExecuting: help\n");
+    dispatch_builtin(cmd_help);
+
+    char *cmd_invalid[] = {"unknown_cmd", NULL};
+    printf("\nExecuting: unknown_cmd\n");
+    if (dispatch_builtin(cmd_invalid) == -1)
+    {
+        printf("[Dispatch Error] Command not found in built-in table.\n");
+    }
+
+    return 0;
+}
