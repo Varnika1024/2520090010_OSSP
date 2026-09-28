@@ -1,0 +1,119 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+#define MAX_TOKENS 32
+#define MAX_TOKEN_LEN 256
+
+int parse_with_escapes(const char *input, char *tokens[])
+{
+    int token_count = 0;
+    int i = 0;
+    int len = strlen(input);
+
+    while (i < len && token_count < MAX_TOKENS - 1)
+    {
+        while (i < len && (input[i] == ' ' || input[i] == '\t'))
+        {
+            i++;
+        }
+        if (i >= len) break;
+
+        char current[MAX_TOKEN_LEN];
+        int c_idx = 0;
+
+        while (i < len && input[i] != ' ' && input[i] != '\t')
+        {
+            if (input[i] == '\\' && i + 1 < len)
+            {
+                i++;
+                current[c_idx++] = input[i++];
+            }
+            else
+            {
+                current[c_idx++] = input[i++];
+            }
+        }
+
+        current[c_idx] = '\0';
+        tokens[token_count] = malloc(strlen(current) + 1);
+        strcpy(tokens[token_count], current);
+        token_count++;
+    }
+
+    tokens[token_count] = NULL;
+    return token_count;
+}
+
+void execute_command(char *tokens[])
+{
+    if (tokens[0] == NULL) return;
+
+    pid_t pid = fork();
+
+    if (pid < 0)
+    {
+        perror("fork failed");
+        return;
+    }
+    else if (pid == 0)
+    {
+        execvp(tokens[0], tokens);
+        perror("execvp failed");
+        exit(1);
+    }
+    else
+    {
+        int status;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status))
+        {
+            printf("[Parent] Child exited with status: %d\n", WEXITSTATUS(status));
+        }
+    }
+}
+
+void free_tokens(char *tokens[], int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        free(tokens[i]);
+    }
+}
+
+int main()
+{
+    char *tokens[MAX_TOKENS];
+
+    printf("=== Part 1: Escape Sequence Parsing ===\n");
+    const char *test1 = "echo Hello\\ World File\\$Name Special\\&Symbol";
+    printf("Input: %s\n", test1);
+
+    int count1 = parse_with_escapes(test1, tokens);
+    for (int i = 0; i < count1; i++)
+    {
+        printf("  Token[%d]: %s\n", i, tokens[i]);
+    }
+    printf("\n");
+    free_tokens(tokens, count1);
+
+    printf("=== Part 2: Process Creation and Command Execution ===\n");
+    const char *cmd_test = "echo Argument_1 Argument\\ with\\ space";
+    printf("Executing command: %s\n", cmd_test);
+
+    int count2 = parse_with_escapes(cmd_test, tokens);
+    execute_command(tokens);
+    free_tokens(tokens, count2);
+
+    printf("\n=== Part 3: Command Error Handling ===\n");
+    const char *bad_cmd = "nonexistent_command_xyz";
+    printf("Executing command: %s\n", bad_cmd);
+
+    int count3 = parse_with_escapes(bad_cmd, tokens);
+    execute_command(tokens);
+    free_tokens(tokens, count3);
+
+    return 0;
+}
