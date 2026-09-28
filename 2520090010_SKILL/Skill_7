@@ -1,0 +1,112 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+void resolve_and_verify_command(const char *cmd, char *resolved_path, size_t max_len)
+{
+    if (strchr(cmd, '/'))
+    {
+        if (access(cmd, X_OK) == 0)
+        {
+            strncpy(resolved_path, cmd, max_len);
+            return;
+        }
+        resolved_path[0] = '\0';
+        return;
+    }
+
+    char *path_env = getenv("PATH");
+    if (!path_env)
+    {
+        resolved_path[0] = '\0';
+        return;
+    }
+
+    char path_copy[2048];
+    strncpy(path_copy, path_env, sizeof(path_copy) - 1);
+    path_copy[sizeof(path_copy) - 1] = '\0';
+
+    char *dir = strtok(path_copy, ":");
+    while (dir != NULL)
+    {
+        char candidate[1024];
+        snprintf(candidate, sizeof(candidate), "%s/%s", dir, cmd);
+
+        if (access(candidate, X_OK) == 0)
+        {
+            strncpy(resolved_path, candidate, max_len);
+            return;
+        }
+        dir = strtok(NULL, ":");
+    }
+
+    resolved_path[0] = '\0';
+}
+
+void test_command_resolution()
+{
+    printf("=== Part 1: Command Resolution & PATH Verification ===\n\n");
+
+    const char *commands[] = {"ls", "echo", "whoami", "fakecmd_xyz"};
+    char path_buffer[1024];
+
+    for (int i = 0; i < 4; i++)
+    {
+        resolve_and_verify_command(commands[i], path_buffer, sizeof(path_buffer));
+        if (strlen(path_buffer) > 0)
+        {
+            printf("[Found]   %-12s -> %s (Executable permission OK)\n", commands[i], path_buffer);
+        }
+        else
+        {
+            printf("[Missing] %-12s -> Command not found in PATH\n", commands[i]);
+        }
+    }
+    printf("\n");
+}
+
+void test_process_monitoring()
+{
+    printf("=== Part 2: Process Synchronization & Monitoring with waitpid() ===\n\n");
+
+    pid_t pid1 = fork();
+    if (pid1 == 0)
+    {
+        printf("[Child 1 (PID: %d)] Running task, exiting with code 42...\n", getpid());
+        exit(42);
+    }
+
+    pid_t pid2 = fork();
+    if (pid2 == 0)
+    {
+        printf("[Child 2 (PID: %d)] Running task, raising SIGABRT...\n", getpid());
+        abort();
+    }
+
+    int status1, status2;
+
+    waitpid(pid1, &status1, 0);
+    printf("[Parent] Monitored Child 1:\n");
+    if (WIFEXITED(status1))
+    {
+        printf("  - Exited Normally: Yes\n");
+        printf("  - Exit Status Code: %d\n", WEXITSTATUS(status1));
+    }
+
+    waitpid(pid2, &status2, 0);
+    printf("[Parent] Monitored Child 2:\n");
+    if (WIFSIGNALED(status2))
+    {
+        printf("  - Terminated By Signal: Yes\n");
+        printf("  - Signal Number: %d\n", WTERMSIG(status2));
+    }
+}
+
+int main()
+{
+    test_command_resolution();
+    test_process_monitoring();
+    return 0;
+}
