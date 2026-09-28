@@ -1,0 +1,193 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#define MAX_TOKENS 16
+#define MAX_TOKEN_LEN 256
+
+void expand_variables(const char *input, char *output, size_t max_len)
+{
+    int in_idx = 0;
+    int out_idx = 0;
+    int in_len = strlen(input);
+
+    while (in_idx < in_len && out_idx < max_len - 1)
+    {
+        if (input[in_idx] == '$')
+        {
+            in_idx++;
+            char var_name[64];
+            int v_idx = 0;
+
+            while (in_idx < in_len && ((input[in_idx] >= 'A' && input[in_idx] <= 'Z') ||
+                                       (input[in_idx] >= 'a' && input[in_idx] <= 'z') ||
+                                       (input[in_idx] >= '0' && input[in_idx] <= '9') ||
+                                       (input[in_idx] == '_')))
+            {
+                var_name[v_idx++] = input[in_idx++];
+            }
+            var_name[v_idx] = '\0';
+
+            char *val = getenv(var_name);
+            if (val)
+            {
+                for (int k = 0; val[k] != '\0' && out_idx < max_len - 1; k++)
+                {
+                    output[out_idx++] = val[k];
+                }
+            }
+        }
+        else
+        {
+            output[out_idx++] = input[in_idx++];
+        }
+    }
+    output[out_idx] = '\0';
+}
+
+typedef int (*builtin_func_t)(char *args[]);
+
+struct BuiltinCommand
+{
+    const char *name;
+    builtin_func_t func;
+};
+
+int builtin_cd(char *args[])
+{
+    char *target = args[1] ? args[1] : getenv("HOME");
+    if (chdir(target) != 0)
+    {
+        perror("cd failed");
+        return 1;
+    }
+    char cwd[1024];
+    getcwd(cwd, sizeof(cwd));
+    printf("[Built-in cd] Directory changed to: %s\n", cwd);
+    return 0;
+}
+
+int builtin_pwd(char *args[])
+{
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd)) != NULL)
+    {
+        printf("[Built-in pwd] Current directory: %s\n", cwd);
+        return 0;
+    }
+    perror("pwd failed");
+    return 1;
+}
+
+int builtin_export(char *args[])
+{
+    if (!args[1])
+    {
+        printf("[Built-in export] Usage: export KEY=VALUE\n");
+        return 1;
+    }
+    char *eq = strchr(args[1], '=');
+    if (!eq)
+    {
+        printf("[Built-in export] Format must be KEY=VALUE\n");
+        return 1;
+    }
+    *eq = '\0';
+    setenv(args[1], eq + 1, 1);
+    printf("[Built-in export] Environment variable set: %s=%s\n", args[1], eq + 1);
+    return 0;
+}
+
+int builtin_help(char *args[])
+{
+    printf("[Built-in help] Supported built-ins: cd, pwd, export, help, exit\n");
+    return 0;
+}
+
+int builtin_exit(char *args[])
+{
+    printf("[Built-in exit] Session terminated cleanly.\n");
+    return 0;
+}
+
+struct BuiltinCommand dispatch_table[] = {
+    {"cd", builtin_cd},
+    {"pwd", builtin_pwd},
+    {"export", builtin_export},
+    {"help", builtin_help},
+    {"exit", builtin_exit},
+    {NULL, NULL}
+};
+
+int dispatch_builtin(char *tokens[])
+{
+    if (!tokens[0]) return -1;
+
+    for (int i = 0; dispatch_table[i].name != NULL; i++)
+    {
+        if (strcmp(tokens[0], dispatch_table[i].name) == 0)
+        {
+            return dispatch_table[i].func(tokens);
+        }
+    }
+    return -1;
+}
+
+void test_variable_expansion()
+{
+    printf("=== Part 1: Variable Reference Detection and Expansion ===\n\n");
+
+    setenv("PROJECT", "OS_Lab_Practical", 1);
+    setenv("ROLE", "Developer", 1);
+
+    const char *test_cases[] = {
+        "Hello $ROLE welcome to $PROJECT",
+        "Target config: $UNDEFINED_KEY/backup",
+        "Path: /home/$USER/workspace",
+        "$PROJECT/$ROLE/build"
+    };
+
+    char expanded[MAX_TOKEN_LEN];
+    for (int i = 0; i < 4; i++)
+    {
+        expand_variables(test_cases[i], expanded, sizeof(expanded));
+        printf("Input:    %s\n", test_cases[i]);
+        printf("Expanded: %s\n\n", expanded);
+    }
+}
+
+void test_dispatch_table()
+{
+    printf("=== Part 2: Built-in Command Dispatch Table Execution ===\n\n");
+
+    char *cmd1[] = {"pwd", NULL};
+    printf("Executing 'pwd':\n");
+    dispatch_builtin(cmd1);
+
+    char *cmd2[] = {"export", "LAB_NUM=8", NULL};
+    printf("\nExecuting 'export LAB_NUM=8':\n");
+    dispatch_builtin(cmd2);
+
+    char *cmd3[] = {"help", NULL};
+    printf("\nExecuting 'help':\n");
+    dispatch_builtin(cmd3);
+
+    char *cmd4[] = {"cd", "..", NULL};
+    printf("\nExecuting 'cd ..':\n");
+    dispatch_builtin(cmd4);
+
+    char *cmd5[] = {"invalid_builtin", NULL};
+    printf("\nExecuting 'invalid_builtin':\n");
+    if (dispatch_builtin(cmd5) == -1)
+    {
+        printf("[Dispatch Status] Command not found in built-in dispatch table.\n");
+    }
+}
+
+int main()
+{
+    test_variable_expansion();
+    test_dispatch_table();
+    return 0;
+}
