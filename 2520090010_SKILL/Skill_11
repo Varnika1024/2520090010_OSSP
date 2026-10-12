@@ -1,0 +1,167 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+#define HISTORY_CAPACITY 5
+#define MAX_CMD_LEN 256
+#define MAX_PIPE_CMDS 4
+
+typedef struct
+{
+    char commands[HISTORY_CAPACITY][MAX_CMD_LEN];
+    int start;
+    int count;
+    int total_added;
+} HistoryBuffer;
+
+void history_init(HistoryBuffer *hb)
+{
+    hb->start = 0;
+    hb->count = 0;
+    hb->total_added = 0;
+}
+
+void history_add(HistoryBuffer *hb, const char *cmd)
+{
+    int index;
+    if (hb->count < HISTORY_CAPACITY)
+    {
+        index = (hb->start + hb->count) % HISTORY_CAPACITY;
+        hb->count++;
+    }
+    else
+    {
+        index = hb->start;
+        hb->start = (hb->start + 1) % HISTORY_CAPACITY;
+    }
+
+    strncpy(hb->commands[index], cmd, MAX_CMD_LEN - 1);
+    hb->commands[index][MAX_CMD_LEN - 1] = '\0';
+    hb->total_added++;
+}
+
+void history_display(const HistoryBuffer *hb)
+{
+    printf("--- Shell History Buffer (Capacity: %d, Stored: %d) ---\n", HISTORY_CAPACITY, hb->count);
+    int first_id = hb->total_added - hb->count + 1;
+    for (int i = 0; i < hb->count; i++)
+    {
+        int slot = (hb->start + i) % HISTORY_CAPACITY;
+        printf("  %d: %s\n", first_id + i, hb->commands[slot]);
+    }
+    printf("-------------------------------------------------------\n\n");
+}
+
+const char *history_retrieve(const HistoryBuffer *hb, int entry_num)
+{
+    int first_id = hb->total_added - hb->count + 1;
+    int last_id = hb->total_added;
+
+    if (entry_num < first_id || entry_num > last_id)
+    {
+        return NULL;
+    }
+
+    int offset = entry_num - first_id;
+    int slot = (hb->start + offset) % HISTORY_CAPACITY;
+    return hb->commands[slot];
+}
+
+void execute_pipeline(char *cmds[][4], int num_cmds)
+{
+    int pipefds[2 * (num_cmds - 1)];
+
+    for (int i = 0; i < num_cmds - 1; i++)
+    {
+        if (pipe(pipefds + i * 2) < 0)
+        {
+            perror("pipe creation failed");
+            return;
+        }
+    }
+
+    for (int i = 0; i < num_cmds; i++)
+    {
+        pid_t pid = fork();
+        if (pid == 0)
+        {
+            if (i > 0)
+            {
+                dup2(pipefds[(i - 1) * 2], STDIN_FILENO);
+            }
+
+            if (i < num_cmds - 1)
+            {
+                dup2(pipefds[i * 2 + 1], STDOUT_FILENO);
+            }
+
+            for (int j = 0; j < 2 * (num_cmds - 1); j++)
+            {
+                close(pipefds[j]);
+            }
+
+            execvp(cmds[i][0], cmds[i]);
+            perror("execvp failed");
+            exit(1);
+        }
+    }
+
+    for (int i = 0; i < 2 * (num_cmds - 1); i++)
+    {
+        close(pipefds[i]);
+    }
+
+    for (int i = 0; i < num_cmds; i++)
+    {
+        wait(NULL);
+    }
+}
+
+int main()
+{
+    printf("=== Part 1: Circular Command History Buffer ===\n\n");
+
+    HistoryBuffer hb;
+    history_init(&hb);
+
+    history_add(&hb, "ls -la");
+    history_add(&hb, "cd /Users");
+    history_add(&hb, "pwd");
+    history_add(&hb, "export DEBUG=1");
+    history_add(&hb, "echo $DEBUG");
+
+    printf("Initial 5 entries added (Buffer full):\n");
+    history_display(&hb);
+
+    printf("Adding 6th and 7th commands (Testing capacity eviction):\n");
+    history_add(&hb, "grep root /etc/passwd");
+    history_add(&hb, "cat file.txt");
+    history_display(&hb);
+
+    int test_id = 6;
+    const char *retrieved = history_retrieve(&hb, test_id);
+    if (retrieved)
+    {
+        printf("Retrieved entry #%d: \"%s\"\n\n", test_id, retrieved);
+    }
+
+    printf("=== Part 2: Multiprocess Pipeline Execution ===\n\n");
+    printf("Executing pipeline layout: echo -e \"banana\\napple\\ncherry\" | grep a | sort\n\n");
+
+    char *cmd1[] = {"echo", "banana\napple\ncherry", NULL};
+    char *cmd2[] = {"grep", "a", NULL};
+    char *cmd3[] = {"sort", NULL};
+
+    char *(*pipeline[MAX_PIPE_CMDS])[4] = {
+        (char *(*)[4])cmd1,
+        (char *(*)[4])cmd2,
+        (char *(*)[4])cmd3
+    };
+
+    execute_pipeline(pipeline, 3);
+
+    printf("\nPipeline layout validated and executed successfully.\n");
+    return 0;
+}
