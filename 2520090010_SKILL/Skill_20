@@ -1,0 +1,247 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <signal.h>
+
+#define MAX_JOBS 16
+#define MAX_CMD_LEN 128
+
+typedef enum
+{
+    JOB_RUNNING,
+    JOB_STOPPED,
+    JOB_DONE
+} JobState;
+
+typedef struct
+{
+    int job_id;
+    pid_t pid;
+    pid_t pgid;
+    char command[MAX_CMD_LEN];
+    JobState state;
+} Job;
+
+Job job_table[MAX_JOBS];
+int next_job_id = 1;
+volatile sig_atomic_t fg_pid = 0;
+
+void job_table_init()
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        job_table[i].job_id = 0;
+        job_table[i].pid = 0;
+        job_table[i].pgid = 0;
+        job_table[i].state = JOB_DONE;
+        job_table[i].command[0] = '\0';
+    }
+}
+
+int job_add(pid_t pid, pid_t pgid, const char *cmd, JobState state)
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].job_id == 0)
+        {
+            job_table[i].job_id = next_job_id++;
+            job_table[i].pid = pid;
+            job_table[i].pgid = pgid;
+            job_table[i].state = state;
+            strncpy(job_table[i].command, cmd, MAX_CMD_LEN - 1);
+            job_table[i].command[MAX_CMD_LEN - 1] = '\0';
+            return job_table[i].job_id;
+        }
+    }
+    return -1;
+}
+
+Job *job_find_by_pid(pid_t pid)
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].pid == pid)
+        {
+            return &job_table[i];
+        }
+    }
+    return NULL;
+}
+
+void job_table_display()
+{
+    printf("--- Job Table Status ---\n");
+    printf("%-8s %-8s %-8s %-12s %-20s\n", "JID", "PID", "PGID", "STATUS", "COMMAND");
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].job_id != 0)
+        {
+            const char *status_str = "Running";
+            if (job_table[i].state == JOB_STOPPED)
+            {
+                status_str = "Stopped";
+            }
+            else if (job_table[i].state == JOB_DONE)
+            {
+                status_str = "Done";
+            }
+
+            printf("[%d]      %-8d %-8d %-12s %s\n",
+                   job_table[i].job_id,
+                   job_table[i].pid,
+                   job_table[i].pgid,
+                   status_str,
+                   job_table[i].command);
+        }
+    }
+    printf("------------------------\n\n");
+}
+
+void sigtstp_handler(int sig)
+{
+    if (fg_pid > 0)
+    {
+        kill(-fg_pid, SIGTSTP);
+        printf("\n[Signal Caught] SIGTSTP forwarded to process group: %d\n", fg_pid);
+    }
+    else
+    {
+        printf("\n[Signal Caught] SIGTSTP received: No active foreground job.\n");
+    }
+}
+
+void register_tstp_handler()
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigtstp_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+
+    if (sigaction(SIGTSTP, &sa, NULL) < 0)
+    {
+        perror("sigaction registration failed");
+        exit(1);
+    }
+    printf("[Init] SIGTSTP handler registered with SA_RESTART.\n");
+}
+
+void run_foreground_command(char *args[], const char *cmd_str)
+{
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        perror("fork failed");
+        return;
+    }
+
+    if (pid == 0)
+    {
+        setpgid(0, 0);
+        signal(SIGTSTP, SIG_DFL);
+        signal(SIGTTOU, SIG_DFL);
+        signal(SIGTTIN, SIG_DFL);
+        execvp(args[0], args);
+        perror("execvp failed");
+        exit(1);
+    }
+
+    setpgid(pid, pid);
+    fg_pid = pid;
+
+    tcsetpgrp(STDIN_FILENO, pid);
+
+    int status;
+    waitpid(pid, &status, WUNTRACED);
+
+    tcsetpgrp(STDIN_FILENO, getpgrp());
+
+    if (WIFSTOPPED(status))
+    {
+        int jid = job_add(pid, pid, cmd_str, JOB_STOPPED);
+        printf("\n[Job Suspended] [%d] %d (Stopped by SIGTSTP)\n", jid, pid);
+    }
+    else if (WIFEXITED(status))
+    {
+        printf("[Process Status] Foreground process %d finished.\n", pid);
+    }
+
+    fg_pid = 0;
+}
+
+int resume_stopped_job_in_bg(int jid)
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].job_id == jid)
+        {
+            if (job_table[i].state == JOB_STOPPED)
+            {
+                if (kill(-job_table[i].pgid, SIGCONT) < 0)
+                {
+                    perror("kill SIGCONT failed");
+                    return 1;
+                }
+                job_table[i].state = JOB_RUNNING;
+                printf("[Job Resumed] Resumed Job [%d] (%s) in background via SIGCONT.\n\n",
+                       job_table[i].job_id, job_table[i].command);
+                return 0;
+            }
+        }
+    }
+    printf("Job [%d] not found or not stopped.\n", jid);
+    return 1;
+}
+
+int main()
+{
+    signal(SIGTTOU, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+
+    job_table_init();
+    register_tstp_handler();
+
+    printf("\n=== Part 1: Process Group Creation, Terminal Control & SIGTSTP Suspension ===\n\n");
+
+    pid_t monitor_pid = fork();
+    if (monitor_pid == 0)
+    {
+        usleep(500000);
+        printf("[Harness] Delivering SIGTSTP to shell process...\n");
+        kill(getppid(), SIGTSTP);
+        exit(0);
+    }
+
+    printf("Launching foreground job: sleep 4\n");
+    char *cmd[] = {"sleep", "4", NULL};
+    run_foreground_command(cmd, "sleep 4");
+
+    waitpid(monitor_pid, NULL, 0);
+
+    job_table_display();
+
+    printf("=== Part 2: Background Recovery via SIGCONT & Reaping ===\n\n");
+
+    resume_stopped_job_in_bg(1);
+    job_table_display();
+
+    printf("Waiting 3.8 seconds for resumed job to finish execution...\n\n");
+    usleep(3800000);
+
+    int status;
+    Job *j = job_find_by_pid(job_table[0].pid);
+    if (j)
+    {
+        pid_t res = waitpid(j->pid, &status, WNOHANG);
+        if (res == j->pid)
+        {
+            j->state = JOB_DONE;
+        }
+    }
+
+    job_table_display();
+
+    return 0;
+}
