@@ -1,0 +1,147 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <limits.h>
+#include <sys/wait.h>
+#include <ctype.h>
+
+#define STATE_FILE "shell_state.log"
+
+int is_valid_var_name(const char *name)
+{
+    if (!name || (!isalpha(name[0]) && name[0] != '_'))
+    {
+        return 0;
+    }
+    for (int i = 1; name[i] != '\0'; i++)
+    {
+        if (!isalnum(name[i]) && name[i] != '_')
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int handle_export(char *arg)
+{
+    if (!arg)
+    {
+        printf("export: usage: export NAME=VALUE\n");
+        return 1;
+    }
+
+    char buffer[512];
+    strncpy(buffer, arg, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    char *eq = strchr(buffer, '=');
+    if (!eq)
+    {
+        printf("export: invalid format, expected NAME=VALUE\n");
+        return 1;
+    }
+
+    *eq = '\0';
+    char *name = buffer;
+    char *value = eq + 1;
+
+    if (!is_valid_var_name(name))
+    {
+        printf("export: '%s': not a valid identifier\n", name);
+        return 1;
+    }
+
+    if (setenv(name, value, 1) != 0)
+    {
+        perror("setenv failed");
+        return 1;
+    }
+
+    printf("[Export Success] %s=%s (Persisted to environment)\n", name, value);
+    return 0;
+}
+
+void test_child_export_inheritance(const char *var_name)
+{
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        perror("fork failed");
+        return;
+    }
+    else if (pid == 0)
+    {
+        char *val = getenv(var_name);
+        printf("  [Child Process] Inherited %s = %s\n", var_name, val ? val : "(null)");
+        exit(0);
+    }
+    else
+    {
+        waitpid(pid, NULL, 0);
+    }
+}
+
+void save_shell_state(const char *cwd)
+{
+    FILE *fp = fopen(STATE_FILE, "w");
+    if (!fp)
+    {
+        perror("fopen failed while saving state");
+        return;
+    }
+    fprintf(fp, "LAST_WORKING_DIR=%s\n", cwd);
+    fprintf(fp, "STATUS=SAVED_ON_EXIT\n");
+    fclose(fp);
+    printf("[State Manager] Shell state successfully logged to %s\n", STATE_FILE);
+}
+
+void cleanup_and_exit(char *allocated_memory)
+{
+    printf("\n=== Processing Exit Request & Resource Cleanup ===\n");
+    if (allocated_memory)
+    {
+        free(allocated_memory);
+        printf("[Cleanup] Dynamically allocated memory freed successfully.\n");
+    }
+
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) != NULL)
+    {
+        save_shell_state(cwd);
+    }
+
+    printf("[Exit] Shell session exited cleanly with status 0.\n");
+    unlink(STATE_FILE);
+    exit(0);
+}
+
+int main()
+{
+    printf("=== Part 1: Export Parsing, Validation & Child Inheritance ===\n\n");
+
+    handle_export("DATABASE_URL=mysql://localhost:3306");
+    handle_export("MAX_CONNECTIONS=100");
+    handle_export("123INVALID_VAR=error");
+    handle_export("DATABASE_URL=postgres://localhost:5432");
+
+    printf("\nVerifying Child Process Environment Variable Inheritance:\n");
+    test_child_export_inheritance("DATABASE_URL");
+    test_child_export_inheritance("MAX_CONNECTIONS");
+
+    printf("\n=== Part 2: Current Directory, State Persistence & Exit ===\n\n");
+
+    char current_path[PATH_MAX];
+    if (getcwd(current_path, sizeof(current_path)) != NULL)
+    {
+        printf("[Current Directory] %s\n", current_path);
+    }
+
+    char *allocated_heap_block = (char *)malloc(1024);
+    strcpy(allocated_heap_block, "Active session token buffer");
+
+    cleanup_and_exit(allocated_heap_block);
+
+    return 0;
+}
