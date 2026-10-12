@@ -1,0 +1,448 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <errno.h>
+
+#define MAX_LINE 1024
+#define MAX_TOKENS 64
+#define MAX_CMDS 16
+#define MAX_JOBS 16
+
+typedef enum
+{
+    ERR_NONE,
+    ERR_EMPTY_PIPE,
+    ERR_MISSING_REDIRECT_FILE,
+    ERR_DUP_REDIRECT,
+    ERR_EXECVP_FAILED,
+    ERR_FORK_FAILED
+} ShellError;
+
+typedef enum
+{
+    JOB_RUNNING,
+    JOB_STOPPED,
+    JOB_DONE
+} JobState;
+
+typedef struct
+{
+    int job_id;
+    pid_t pid;
+    pid_t pgid;
+    char command[128];
+    JobState state;
+} Job;
+
+typedef struct
+{
+    char *args[MAX_TOKENS];
+    char *input_file;
+    char *output_file;
+    char *stderr_file;
+    int append_out;
+    int merge_err;
+} CommandNode;
+
+Job job_table[MAX_JOBS];
+int next_job_id = 1;
+volatile sig_atomic_t fg_pid = 0;
+
+void job_table_init()
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        job_table[i].job_id = 0;
+        job_table[i].pid = 0;
+        job_table[i].pgid = 0;
+        job_table[i].state = JOB_DONE;
+        job_table[i].command[0] = '\0';
+    }
+}
+
+int job_add(pid_t pid, pid_t pgid, const char *cmd, JobState state)
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].job_id == 0)
+        {
+            job_table[i].job_id = next_job_id++;
+            job_table[i].pid = pid;
+            job_table[i].pgid = pgid;
+            job_table[i].state = state;
+            strncpy(job_table[i].command, cmd, sizeof(job_table[i].command) - 1);
+            job_table[i].command[sizeof(job_table[i].command) - 1] = '\0';
+            return job_table[i].job_id;
+        }
+    }
+    return -1;
+}
+
+void log_shell_error(ShellError err, const char *detail)
+{
+    switch (err)
+    {
+        case ERR_EMPTY_PIPE:
+            fprintf(stderr, "[Shell Error] Syntax error: Missing command between or around pipes ('|'). Detail: %s\n", detail ? detail : "N/A");
+            break;
+        case ERR_MISSING_REDIRECT_FILE:
+            fprintf(stderr, "[Shell Error] Syntax error: Redirection operator '%s' missing target filename.\n", detail ? detail : "N/A");
+            break;
+        case ERR_DUP_REDIRECT:
+            fprintf(stderr, "[Shell Error] Syntax error: Duplicate or conflicting redirection. Detail: %s\n", detail ? detail : "N/A");
+            break;
+        case ERR_EXECVP_FAILED:
+            fprintf(stderr, "[Shell Error] Execution failed for command '%s': %s\n", detail ? detail : "N/A", strerror(errno));
+            break;
+        case ERR_FORK_FAILED:
+            fprintf(stderr, "[Shell Error] Process fork failed: %s\n", strerror(errno));
+            break;
+        default:
+            break;
+    }
+}
+
+void sigint_handler(int sig)
+{
+    if (fg_pid > 0)
+    {
+        kill(-fg_pid, SIGINT);
+    }
+    else
+    {
+        printf("\n[Interrupt] SIGINT handled: prompt restored gracefully.\n");
+        fflush(stdout);
+    }
+}
+
+void register_signal_handlers()
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGINT, &sa, NULL);
+
+    signal(SIGTTOU, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+}
+
+int tokenize(char *input, char *tokens[])
+{
+    int count = 0;
+    char *token = strtok(input, " \t\r\n");
+    while (token != NULL && count < MAX_TOKENS - 1)
+    {
+        tokens[count++] = token;
+        token = strtok(NULL, " \t\r\n");
+    }
+    tokens[count] = NULL;
+    return count;
+}
+
+ShellError parse_segment(char *tokens[], CommandNode *node)
+{
+    memset(node, 0, sizeof(CommandNode));
+    int arg_idx = 0;
+
+    for (int i = 0; tokens[i] != NULL; i++)
+    {
+        if (strcmp(tokens[i], "<") == 0)
+        {
+            if (tokens[i + 1] == NULL)
+                return ERR_MISSING_REDIRECT_FILE;
+            node->input_file = tokens[++i];
+        }
+        else if (strcmp(tokens[i], ">") == 0)
+        {
+            if (tokens[i + 1] == NULL)
+                return ERR_MISSING_REDIRECT_FILE;
+            node->output_file = tokens[++i];
+            node->append_out = 0;
+        }
+        else if (strcmp(tokens[i], ">>") == 0)
+        {
+            if (tokens[i + 1] == NULL)
+                return ERR_MISSING_REDIRECT_FILE;
+            node->output_file = tokens[++i];
+            node->append_out = 1;
+        }
+        else if (strcmp(tokens[i], "2>") == 0)
+        {
+            if (tokens[i + 1] == NULL)
+                return ERR_MISSING_REDIRECT_FILE;
+            node->stderr_file = tokens[++i];
+        }
+        else if (strcmp(tokens[i], "2>&1") == 0)
+        {
+            node->merge_err = 1;
+        }
+        else
+        {
+            node->args[arg_idx++] = tokens[i];
+        }
+    }
+    node->args[arg_idx] = NULL;
+    return (arg_idx == 0) ? ERR_EMPTY_PIPE : ERR_NONE;
+}
+
+void apply_child_redirections(CommandNode *node)
+{
+    if (node->input_file)
+    {
+        int in_fd = open(node->input_file, O_RDONLY);
+        if (in_fd < 0)
+        {
+            perror("[Subprocess] Input redirection failed");
+            exit(127);
+        }
+        dup2(in_fd, STDIN_FILENO);
+        close(in_fd);
+    }
+
+    if (node->output_file)
+    {
+        int flags = O_WRONLY | O_CREAT | (node->append_out ? O_APPEND : O_TRUNC);
+        int out_fd = open(node->output_file, flags, 0644);
+        if (out_fd < 0)
+        {
+            perror("[Subprocess] Output redirection failed");
+            exit(127);
+        }
+        dup2(out_fd, STDOUT_FILENO);
+        close(out_fd);
+    }
+
+    if (node->stderr_file)
+    {
+        int err_fd = open(node->stderr_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (err_fd < 0)
+        {
+            perror("[Subprocess] Stderr redirection failed");
+            exit(127);
+        }
+        dup2(err_fd, STDERR_FILENO);
+        close(err_fd);
+    }
+
+    if (node->merge_err)
+    {
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+    }
+}
+
+int execute_line(char *line_input)
+{
+    char line_copy[MAX_LINE];
+    strncpy(line_copy, line_input, sizeof(line_copy) - 1);
+    line_copy[sizeof(line_copy) - 1] = '\0';
+
+    char *tokens[MAX_TOKENS];
+    int token_count = tokenize(line_copy, tokens);
+    if (token_count == 0)
+    {
+        return 0;
+    }
+
+    int is_bg = 0;
+    if (strcmp(tokens[token_count - 1], "&") == 0)
+    {
+        is_bg = 1;
+        tokens[--token_count] = NULL;
+        if (token_count == 0)
+        {
+            log_shell_error(ERR_EMPTY_PIPE, "& with no command");
+            return 1;
+        }
+    }
+
+    CommandNode nodes[MAX_CMDS];
+    int num_cmds = 0;
+    char *current_seg[MAX_TOKENS];
+    int seg_idx = 0;
+
+    for (int i = 0; i < token_count; i++)
+    {
+        if (strcmp(tokens[i], "|") == 0)
+        {
+            if (seg_idx == 0)
+            {
+                log_shell_error(ERR_EMPTY_PIPE, "Empty pipe operand before '|'");
+                return 1;
+            }
+            current_seg[seg_idx] = NULL;
+            ShellError err = parse_segment(current_seg, &nodes[num_cmds++]);
+            if (err != ERR_NONE)
+            {
+                log_shell_error(err, "Pipe segment parse error");
+                return 1;
+            }
+            seg_idx = 0;
+        }
+        else
+        {
+            current_seg[seg_idx++] = tokens[i];
+        }
+    }
+
+    if (seg_idx == 0)
+    {
+        log_shell_error(ERR_EMPTY_PIPE, "Trailing '|' without command");
+        return 1;
+    }
+    current_seg[seg_idx] = NULL;
+    ShellError err = parse_segment(current_seg, &nodes[num_cmds++]);
+    if (err != ERR_NONE)
+    {
+        log_shell_error(err, "Final segment parse error");
+        return 1;
+    }
+
+    int pipefds[2 * (num_cmds - 1)];
+    for (int i = 0; i < num_cmds - 1; i++)
+    {
+        if (pipe(pipefds + i * 2) < 0)
+        {
+            perror("pipe creation failed");
+            return 1;
+        }
+    }
+
+    pid_t pids[MAX_CMDS];
+    pid_t leader_pgid = 0;
+
+    for (int i = 0; i < num_cmds; i++)
+    {
+        pids[i] = fork();
+        if (pids[i] < 0)
+        {
+            log_shell_error(ERR_FORK_FAILED, NULL);
+            return 1;
+        }
+
+        if (pids[i] == 0)
+        {
+            if (i == 0)
+            {
+                setpgid(0, 0);
+            }
+            else
+            {
+                setpgid(0, leader_pgid);
+            }
+
+            signal(SIGINT, SIG_DFL);
+            signal(SIGTSTP, SIG_DFL);
+
+            if (i > 0)
+            {
+                dup2(pipefds[(i - 1) * 2], STDIN_FILENO);
+            }
+            if (i < num_cmds - 1)
+            {
+                dup2(pipefds[i * 2 + 1], STDOUT_FILENO);
+            }
+
+            for (int j = 0; j < 2 * (num_cmds - 1); j++)
+            {
+                close(pipefds[j]);
+            }
+
+            apply_child_redirections(&nodes[i]);
+
+            execvp(nodes[i].args[0], nodes[i].args);
+            log_shell_error(ERR_EXECVP_FAILED, nodes[i].args[0]);
+            exit(127);
+        }
+
+        if (i == 0)
+        {
+            leader_pgid = pids[0];
+        }
+        setpgid(pids[i], leader_pgid);
+    }
+
+    for (int i = 0; i < 2 * (num_cmds - 1); i++)
+    {
+        close(pipefds[i]);
+    }
+
+    if (is_bg)
+    {
+        int jid = job_add(pids[0], leader_pgid, line_input, JOB_RUNNING);
+        printf("[Background Job] [%d] (PGID: %d) launched: %s\n", jid, leader_pgid, line_input);
+    }
+    else
+    {
+        fg_pid = leader_pgid;
+        tcsetpgrp(STDIN_FILENO, leader_pgid);
+
+        for (int i = 0; i < num_cmds; i++)
+        {
+            int status;
+            waitpid(pids[i], &status, 0);
+            if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+            {
+                fprintf(stderr, "[Subprocess %d] Exited with error status code: %d\n", pids[i], WEXITSTATUS(status));
+            }
+        }
+
+        tcsetpgrp(STDIN_FILENO, getpgrp());
+        fg_pid = 0;
+    }
+
+    return 0;
+}
+
+int main()
+{
+    register_signal_handlers();
+    job_table_init();
+
+    printf("=== Part 1: Syntax Validation & Graceful Error Recovery ===\n\n");
+
+    printf("Test 1 - Invalid Empty Pipe Syntax:\nCommand: 'ls | | wc -l'\n");
+    execute_line("ls | | wc -l");
+
+    printf("\nTest 2 - Missing Redirection File:\nCommand: 'cat <'\n");
+    execute_line("cat <");
+
+    printf("\nTest 3 - Trailing Pipe:\nCommand: 'echo hello |'\n");
+    execute_line("echo hello |");
+
+    printf("\nTest 4 - Nonexistent Command Execution Recovery:\nCommand: 'this_binary_does_not_exist_xyz'\n");
+    execute_line("this_binary_does_not_exist_xyz");
+
+    printf("\n=== Part 2: End-to-End Integrated Pipeline & Redirection Execution ===\n\n");
+
+    const char *e2e_out = "e2e_results.txt";
+    unlink(e2e_out);
+
+    char valid_pipeline[MAX_LINE];
+    snprintf(valid_pipeline, sizeof(valid_pipeline),
+             "printf beta\\nalpha\\ngamma\\n | sort | tee %s", e2e_out);
+
+    printf("Executing valid composite line:\n%s\n\n", valid_pipeline);
+    execute_line(valid_pipeline);
+
+    FILE *fp = fopen(e2e_out, "r");
+    if (fp)
+    {
+        printf("\nVerification of persisted file '%s':\n", e2e_out);
+        char buf[256];
+        while (fgets(buf, sizeof(buf), fp))
+        {
+            printf("  %s", buf);
+        }
+        fclose(fp);
+    }
+
+    unlink(e2e_out);
+    printf("\n[Reliability Check] Shell remained stable and responsive through all tests.\n");
+    return 0;
+}
