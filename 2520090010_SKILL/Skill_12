@@ -1,0 +1,118 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+void execute_two_stage_pipeline(char *cmd1[], char *cmd2[])
+{
+    int pipefd[2];
+    if (pipe(pipefd) < 0)
+    {
+        perror("pipe failed");
+        return;
+    }
+
+    pid_t pid1 = fork();
+    if (pid1 == 0)
+    {
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execvp(cmd1[0], cmd1);
+        perror("execvp cmd1 failed");
+        exit(1);
+    }
+
+    pid_t pid2 = fork();
+    if (pid2 == 0)
+    {
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execvp(cmd2[0], cmd2);
+        perror("execvp cmd2 failed");
+        exit(1);
+    }
+
+    close(pipefd[0]);
+    close(pipefd[1]);
+
+    waitpid(pid1, NULL, 0);
+    waitpid(pid2, NULL, 0);
+}
+
+void execute_multi_stage_pipeline(char **commands[], int num_cmds)
+{
+    int pipefds[2 * (num_cmds - 1)];
+
+    for (int i = 0; i < num_cmds - 1; i++)
+    {
+        if (pipe(pipefds + i * 2) < 0)
+        {
+            perror("multi pipe creation failed");
+            return;
+        }
+    }
+
+    pid_t pids[num_cmds];
+
+    for (int i = 0; i < num_cmds; i++)
+    {
+        pids[i] = fork();
+        if (pids[i] == 0)
+        {
+            if (i > 0)
+            {
+                dup2(pipefds[(i - 1) * 2], STDIN_FILENO);
+            }
+
+            if (i < num_cmds - 1)
+            {
+                dup2(pipefds[i * 2 + 1], STDOUT_FILENO);
+            }
+
+            for (int j = 0; j < 2 * (num_cmds - 1); j++)
+            {
+                close(pipefds[j]);
+            }
+
+            execvp(commands[i][0], commands[i]);
+            perror("execvp multi failed");
+            exit(1);
+        }
+    }
+
+    for (int i = 0; i < 2 * (num_cmds - 1); i++)
+    {
+        close(pipefds[i]);
+    }
+
+    for (int i = 0; i < num_cmds; i++)
+    {
+        int status;
+        waitpid(pids[i], &status, 0);
+    }
+}
+
+int main()
+{
+    printf("=== Part 1: Two-Stage Pipeline (printf -> tr) ===\n\n");
+    char *cmd1[] = {"printf", "operating systems lab\n", NULL};
+    char *cmd2[] = {"tr", "a-z", "A-Z", NULL};
+
+    execute_two_stage_pipeline(cmd1, cmd2);
+
+    printf("\n=== Part 2: Multi-Stage Long Pipeline (printf -> tr -> sort -> wc) ===\n\n");
+    char *m1[] = {"printf", "zebra\napple\nmango\nbanana\n", NULL};
+    char *m2[] = {"tr", "a-z", "A-Z", NULL};
+    char *m3[] = {"sort", NULL};
+    char *m4[] = {"wc", "-l", NULL};
+
+    char **pipeline[] = {m1, m2, m3, m4};
+
+    printf("Executing 4-stage pipeline:\n");
+    execute_multi_stage_pipeline(pipeline, 4);
+
+    return 0;
+}
