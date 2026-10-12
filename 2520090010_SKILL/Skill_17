@@ -1,0 +1,223 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <signal.h>
+
+#define MAX_JOBS 16
+#define MAX_CMD_LEN 128
+
+typedef enum
+{
+    JOB_RUNNING,
+    JOB_STOPPED,
+    JOB_DONE
+} JobState;
+
+typedef struct
+{
+    int job_id;
+    pid_t pid;
+    pid_t pgid;
+    char command[MAX_CMD_LEN];
+    JobState state;
+} Job;
+
+Job job_table[MAX_JOBS];
+int next_job_id = 1;
+
+void job_table_init()
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        job_table[i].job_id = 0;
+        job_table[i].pid = 0;
+        job_table[i].pgid = 0;
+        job_table[i].state = JOB_DONE;
+        job_table[i].command[0] = '\0';
+    }
+}
+
+int job_add(pid_t pid, pid_t pgid, const char *cmd, JobState state)
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].job_id == 0)
+        {
+            job_table[i].job_id = next_job_id++;
+            job_table[i].pid = pid;
+            job_table[i].pgid = pgid;
+            job_table[i].state = state;
+            strncpy(job_table[i].command, cmd, MAX_CMD_LEN - 1);
+            job_table[i].command[MAX_CMD_LEN - 1] = '\0';
+            return job_table[i].job_id;
+        }
+    }
+    return -1;
+}
+
+Job *job_find_by_id(int jid)
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].job_id == jid)
+        {
+            return &job_table[i];
+        }
+    }
+    return NULL;
+}
+
+void job_table_update()
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].job_id != 0 && job_table[i].state != JOB_DONE)
+        {
+            int status;
+            pid_t res = waitpid(job_table[i].pid, &status, WNOHANG | WUNTRACED | WCONTINUED);
+            if (res == job_table[i].pid)
+            {
+                if (WIFEXITED(status) || WIFSIGNALED(status))
+                {
+                    job_table[i].state = JOB_DONE;
+                }
+                else if (WIFSTOPPED(status))
+                {
+                    job_table[i].state = JOB_STOPPED;
+                }
+                else if (WIFCONTINUED(status))
+                {
+                    job_table[i].state = JOB_RUNNING;
+                }
+            }
+        }
+    }
+}
+
+void builtin_jobs()
+{
+    job_table_update();
+    printf("--- Active Jobs Listing ---\n");
+    printf("%-8s %-8s %-8s %-12s %-20s\n", "JID", "PID", "PGID", "STATUS", "COMMAND");
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (job_table[i].job_id != 0)
+        {
+            const char *status_str = "Running";
+            if (job_table[i].state == JOB_STOPPED)
+            {
+                status_str = "Stopped";
+            }
+            else if (job_table[i].state == JOB_DONE)
+            {
+                status_str = "Done";
+            }
+
+            printf("[%d]      %-8d %-8d %-12s %s\n",
+                   job_table[i].job_id,
+                   job_table[i].pid,
+                   job_table[i].pgid,
+                   status_str,
+                   job_table[i].command);
+        }
+    }
+    printf("---------------------------\n\n");
+}
+
+int builtin_fg(int jid)
+{
+    job_table_update();
+    Job *job = job_find_by_id(jid);
+    if (!job)
+    {
+        printf("fg: job [%d] not found\n", jid);
+        return 1;
+    }
+
+    if (job->state == JOB_DONE)
+    {
+        printf("fg: job [%d] already finished\n", jid);
+        return 1;
+    }
+
+    printf("[fg] Bringing Job [%d] (%s) to foreground...\n", job->job_id, job->command);
+
+    tcsetpgrp(STDIN_FILENO, job->pgid);
+
+    if (job->state == JOB_STOPPED)
+    {
+        kill(-job->pgid, SIGCONT);
+        job->state = JOB_RUNNING;
+    }
+
+    int status;
+    waitpid(job->pid, &status, WUNTRACED);
+
+    tcsetpgrp(STDIN_FILENO, getpgrp());
+
+    if (WIFEXITED(status) || WIFSIGNALED(status))
+    {
+        job->state = JOB_DONE;
+        printf("[fg] Job [%d] completed.\n\n", job->job_id);
+    }
+    else if (WIFSTOPPED(status))
+    {
+        job->state = JOB_STOPPED;
+        printf("\n[fg] Job [%d] stopped again.\n\n", job->job_id);
+    }
+
+    return 0;
+}
+
+pid_t launch_background_job(char *tokens[], const char *cmd_str)
+{
+    pid_t pid = fork();
+    if (pid == 0)
+    {
+        setpgid(0, 0);
+        execvp(tokens[0], tokens);
+        perror("execvp failed");
+        exit(1);
+    }
+    setpgid(pid, pid);
+    job_add(pid, pid, cmd_str, JOB_RUNNING);
+    return pid;
+}
+
+int main()
+{
+    signal(SIGTTOU, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+
+    job_table_init();
+
+    printf("=== Part 1: Launching Tasks & Testing Job Listings ===\n\n");
+
+    char *cmd1[] = {"sleep", "3", NULL};
+    char *cmd2[] = {"sleep", "1", NULL};
+
+    printf("Starting Job 1: sleep 3 &\n");
+    launch_background_job(cmd1, "sleep 3 &");
+
+    printf("Starting Job 2: sleep 1 &\n");
+    launch_background_job(cmd2, "sleep 1 &");
+
+    builtin_jobs();
+
+    printf("Sleeping parent for 1.2 seconds to verify state updates...\n\n");
+    usleep(1200000);
+
+    builtin_jobs();
+
+    printf("=== Part 2: Foreground Switching (fg) & Terminal Transfer ===\n\n");
+
+    printf("Bringing Job [1] into foreground using builtin_fg(1):\n");
+    builtin_fg(1);
+
+    printf("Inspecting job listings after foreground completion:\n");
+    builtin_jobs();
+
+    return 0;
+}
