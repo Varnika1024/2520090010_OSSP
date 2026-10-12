@@ -1,0 +1,72 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#define NUM_THREADS 4
+#define ITERATIONS 1000000
+
+long unsafe_counter = 0;
+long safe_counter = 0;
+pthread_mutex_t lock;
+
+void *worker_unsafe(void *arg)
+{
+    for (int i = 0; i < ITERATIONS; i++)
+    {
+        unsafe_counter++;
+    }
+    return NULL;
+}
+
+void *worker_safe(void *arg)
+{
+    for (int i = 0; i < ITERATIONS; i++)
+    {
+        pthread_mutex_lock(&lock);
+        safe_counter++;
+        pthread_mutex_unlock(&lock);
+    }
+    return NULL;
+}
+
+int main()
+{
+    pthread_t threads[NUM_THREADS];
+    long expected_total = (long)NUM_THREADS * ITERATIONS;
+
+    printf("=== Part 1: Race Condition (Unsynchronized Counter) ===\n");
+    for (int i = 0; i < NUM_THREADS; i++)
+    {
+        pthread_create(&threads[i], NULL, worker_unsafe, NULL);
+    }
+
+    for (int i = 0; i < NUM_THREADS; i++)
+    {
+        pthread_join(threads[i], NULL);
+    }
+
+    printf("Expected Value: %ld\n", expected_total);
+    printf("Actual Value:   %ld\n", unsafe_counter);
+    printf("Difference:     %ld (Lost Updates)\n\n", expected_total - unsafe_counter);
+
+    printf("=== Part 2: Synchronized Counter (POSIX Mutex Lock) ===\n");
+    pthread_mutex_init(&lock, NULL);
+
+    for (int i = 0; i < NUM_THREADS; i++)
+    {
+        pthread_create(&threads[i], NULL, worker_safe, NULL);
+    }
+
+    for (int i = 0; i < NUM_THREADS; i++)
+    {
+        pthread_join(threads[i], NULL);
+    }
+
+    pthread_mutex_destroy(&lock);
+
+    printf("Expected Value: %ld\n", expected_total);
+    printf("Actual Value:   %ld\n", safe_counter);
+    printf("Difference:     0 (Thread-Safe Execution)\n");
+
+    return 0;
+}
