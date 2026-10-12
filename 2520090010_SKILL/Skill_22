@@ -1,0 +1,174 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+
+#define MAX_LINE 1024
+#define MAX_TOKENS 32
+
+typedef struct
+{
+    char **args;
+    int arg_count;
+    char *input_file;
+    char *output_file;
+} ParsedCommand;
+
+/* Dynamically allocate command representation to test memory lifecycle */
+ParsedCommand *parse_command_dynamic(const char *cmd_line)
+{
+    ParsedCommand *cmd = (ParsedCommand *)malloc(sizeof(ParsedCommand));
+    if (!cmd) return NULL;
+
+    cmd->args = (char **)malloc(sizeof(char *) * MAX_TOKENS);
+    cmd->arg_count = 0;
+    cmd->input_file = NULL;
+    cmd->output_file = NULL;
+
+    char *line_copy = strdup(cmd_line);
+    char *token = strtok(line_copy, " \t\r\n");
+
+    while (token != NULL && cmd->arg_count < MAX_TOKENS - 1)
+    {
+        if (strcmp(token, "<") == 0)
+        {
+            token = strtok(NULL, " \t\r\n");
+            if (token) cmd->input_file = strdup(token);
+        }
+        else if (strcmp(token, ">") == 0)
+        {
+            token = strtok(NULL, " \t\r\n");
+            if (token) cmd->output_file = strdup(token);
+        }
+        else
+        {
+            cmd->args[cmd->arg_count++] = strdup(token);
+        }
+        token = strtok(NULL, " \t\r\n");
+    }
+
+    cmd->args[cmd->arg_count] = NULL;
+    free(line_copy);
+    return cmd;
+}
+
+/* Explicit memory deallocation to guarantee 0 leaks under analysis */
+void free_command_dynamic(ParsedCommand *cmd)
+{
+    if (!cmd) return;
+
+    for (int i = 0; i < cmd->arg_count; i++)
+    {
+        free(cmd->args[i]);
+    }
+    free(cmd->args);
+
+    if (cmd->input_file) free(cmd->input_file);
+    if (cmd->output_file) free(cmd->output_file);
+
+    free(cmd);
+}
+
+/* Execution engine with child-safe file redirection */
+int execute_command_node(ParsedCommand *cmd)
+{
+    if (!cmd || cmd->arg_count == 0) return 0;
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        perror("fork error");
+        return -1;
+    }
+
+    if (pid == 0)
+    {
+        if (cmd->input_file)
+        {
+            int in_fd = open(cmd->input_file, O_RDONLY);
+            if (in_fd < 0) exit(1);
+            dup2(in_fd, STDIN_FILENO);
+            close(in_fd);
+        }
+
+        if (cmd->output_file)
+        {
+            int out_fd = open(cmd->output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (out_fd < 0) exit(1);
+            dup2(out_fd, STDOUT_FILENO);
+            close(out_fd);
+        }
+
+        execvp(cmd->args[0], cmd->args);
+        exit(127);
+    }
+
+    int status;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/* Automated Test Suite & Report Generator */
+void run_test_suite()
+{
+    typedef struct
+    {
+        int test_id;
+        const char *name;
+        const char *command;
+        int expected_exit_code;
+    } TestCase;
+
+    TestCase tests[] = {
+        {1, "Echo Redirection Test", "printf Hello_Skill_22 > test_output.txt", 0},
+        {2, "Input Redirection Read", "cat < test_output.txt", 0},
+        {3, "File Content Verification", "grep Hello_Skill_22 test_output.txt", 0},
+        {4, "Nonexistent Executable Catch", "invalid_shell_cmd_xyz", 127}
+    };
+
+    int total = sizeof(tests) / sizeof(tests[0]);
+    int passed = 0;
+
+    printf("=== Test Automation Suite & Result Validation ===\n\n");
+    printf("%-6s %-32s %-12s %-10s\n", "ID", "TEST NAME", "RESULT", "EXIT CODE");
+    printf("--------------------------------------------------------------------\n");
+
+    for (int i = 0; i < total; i++)
+    {
+        ParsedCommand *cmd = parse_command_dynamic(tests[i].command);
+        int exit_code = execute_command_node(cmd);
+        free_command_dynamic(cmd);
+
+        int success = (exit_code == tests[i].expected_exit_code);
+        if (success) passed++;
+
+        printf("[TC%02d] %-32s %-12s %-10d\n",
+               tests[i].test_id,
+               tests[i].name,
+               success ? "PASS" : "FAIL",
+               exit_code);
+    }
+
+    unlink("test_output.txt");
+
+    printf("--------------------------------------------------------------------\n");
+    printf("Automated Summary: %d / %d Test Cases Passed (%.1f%% Success Rate)\n\n",
+           passed, total, ((float)passed / total) * 100.0);
+}
+
+int main()
+{
+    printf("=== Memory Audit & Automated Shell Test Harness ===\n\n");
+
+    printf("Executing dynamic allocations and immediate resource reclamations...\n");
+    ParsedCommand *sample = parse_command_dynamic("echo Allocating and freeing dynamic tokens");
+    execute_command_node(sample);
+    free_command_dynamic(sample);
+    printf("Dynamic heap allocations cleanly released.\n\n");
+
+    run_test_suite();
+
+    return 0;
+}
