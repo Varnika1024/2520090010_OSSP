@@ -1,0 +1,105 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <signal.h>
+
+volatile sig_atomic_t fg_pid = 0;
+
+void sigint_handler(int sig)
+{
+    if (fg_pid > 0)
+    {
+        kill(-fg_pid, SIGINT);
+        printf("\n[Signal Caught] SIGINT forwarded to foreground process group: %d\n", fg_pid);
+    }
+    else
+    {
+        printf("\n[Signal Caught] SIGINT received: No foreground process running. Shell preserved.\n");
+        fflush(stdout);
+    }
+}
+
+void register_signal_handlers()
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+
+    if (sigaction(SIGINT, &sa, NULL) < 0)
+    {
+        perror("sigaction registration failed");
+        exit(1);
+    }
+    printf("[Init] SIGINT signal handler registered with SA_RESTART flag.\n");
+}
+
+void run_foreground_command(char *args[])
+{
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        perror("fork failed");
+        return;
+    }
+
+    if (pid == 0)
+    {
+        setpgid(0, 0);
+        signal(SIGINT, SIG_DFL);
+        execvp(args[0], args);
+        perror("execvp failed");
+        exit(1);
+    }
+
+    setpgid(pid, pid);
+    fg_pid = pid;
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status))
+    {
+        printf("[Process Status] Foreground process %d exited normally with code %d.\n", pid, WEXITSTATUS(status));
+    }
+    else if (WIFSIGNALED(status))
+    {
+        printf("[Process Status] Foreground process %d terminated by signal %d (%s).\n",
+               pid, WTERMSIG(status), strsignal(WTERMSIG(status)));
+    }
+
+    fg_pid = 0;
+}
+
+int main()
+{
+    register_signal_handlers();
+
+    printf("\n=== Part 1: Shell Stability with No Foreground Process ===\n\n");
+    printf("Simulating SIGINT delivery directly to idle shell process...\n");
+    raise(SIGINT);
+    printf("[Verification] Shell survived SIGINT successfully.\n\n");
+
+    printf("=== Part 2: Foreground Job Signal Forwarding & Termination ===\n\n");
+
+    pid_t monitor_pid = fork();
+    if (monitor_pid == 0)
+    {
+        usleep(500000);
+        printf("[Test Harness] Sending SIGINT to shell process group...\n");
+        kill(getppid(), SIGINT);
+        exit(0);
+    }
+
+    printf("Launching foreground job: sleep 5\n");
+    char *cmd[] = {"sleep", "5", NULL};
+    run_foreground_command(cmd);
+
+    waitpid(monitor_pid, NULL, 0);
+
+    printf("\n[Completion] Shell signal subsystem verified.\n");
+    return 0;
+}
