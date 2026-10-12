@@ -1,0 +1,145 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#define BUFFER_SIZE 5
+#define TOTAL_ITEMS 10
+#define SEM_EMPTY_NAME "/sem_empty_os"
+#define SEM_FULL_NAME "/sem_full_os"
+
+int buffer[BUFFER_SIZE];
+int in = 0;
+int out = 0;
+
+sem_t *sem_empty;
+sem_t *sem_full;
+pthread_mutex_t buffer_mutex;
+
+void *producer(void *arg)
+{
+    for (int i = 1; i <= TOTAL_ITEMS; i++)
+    {
+        sem_wait(sem_empty);
+        pthread_mutex_lock(&buffer_mutex);
+
+        buffer[in] = i;
+        printf("[Producer] Produced item %d at index %d\n", i, in);
+        in = (in + 1) % BUFFER_SIZE;
+
+        pthread_mutex_unlock(&buffer_mutex);
+        sem_post(sem_full);
+
+        usleep(40000);
+    }
+    return NULL;
+}
+
+void *consumer(void *arg)
+{
+    for (int i = 1; i <= TOTAL_ITEMS; i++)
+    {
+        sem_wait(sem_full);
+        pthread_mutex_lock(&buffer_mutex);
+
+        int item = buffer[out];
+        printf("[Consumer] Consumed item %d from index %d\n", item, out);
+        out = (out + 1) % BUFFER_SIZE;
+
+        pthread_mutex_unlock(&buffer_mutex);
+        sem_post(sem_empty);
+
+        usleep(60000);
+    }
+    return NULL;
+}
+
+void run_producer_consumer()
+{
+    printf("=== Part 1: Producer-Consumer with Semaphores (Buffer Size: %d) ===\n\n", BUFFER_SIZE);
+
+    sem_unlink(SEM_EMPTY_NAME);
+    sem_unlink(SEM_FULL_NAME);
+
+    sem_empty = sem_open(SEM_EMPTY_NAME, O_CREAT, 0644, BUFFER_SIZE);
+    sem_full = sem_open(SEM_FULL_NAME, O_CREAT, 0644, 0);
+    pthread_mutex_init(&buffer_mutex, NULL);
+
+    pthread_t prod_thread, cons_thread;
+    pthread_create(&prod_thread, NULL, producer, NULL);
+    pthread_create(&cons_thread, NULL, consumer, NULL);
+
+    pthread_join(prod_thread, NULL);
+    pthread_join(cons_thread, NULL);
+
+    sem_close(sem_empty);
+    sem_close(sem_full);
+    sem_unlink(SEM_EMPTY_NAME);
+    sem_unlink(SEM_FULL_NAME);
+    pthread_mutex_destroy(&buffer_mutex);
+
+    printf("\nProducer-Consumer execution completed successfully without overflow or underflow.\n\n");
+}
+
+pthread_mutex_t res_A;
+pthread_mutex_t res_B;
+
+void *ordered_worker_1(void *arg)
+{
+    pthread_mutex_lock(&res_A);
+    printf("[Thread 1] Acquired Resource A\n");
+    usleep(20000);
+
+    pthread_mutex_lock(&res_B);
+    printf("[Thread 1] Acquired Resource B\n");
+
+    pthread_mutex_unlock(&res_B);
+    pthread_mutex_unlock(&res_A);
+    printf("[Thread 1] Released both resources\n");
+    return NULL;
+}
+
+void *ordered_worker_2(void *arg)
+{
+    pthread_mutex_lock(&res_A);
+    printf("[Thread 2] Acquired Resource A (Resource Ordering enforced)\n");
+    usleep(20000);
+
+    pthread_mutex_lock(&res_B);
+    printf("[Thread 2] Acquired Resource B\n");
+
+    pthread_mutex_unlock(&res_B);
+    pthread_mutex_unlock(&res_A);
+    printf("[Thread 2] Released both resources\n");
+    return NULL;
+}
+
+void run_deadlock_prevention()
+{
+    printf("=== Part 2: Deadlock Prevention via Resource Hierarchy Ordering ===\n\n");
+    printf("Deadlock requires 4 conditions: Mutual Exclusion, Hold & Wait, No Preemption, Circular Wait.\n");
+    printf("Strategy: Enforce strict resource acquisition hierarchy (Res A -> Res B) to break Circular Wait.\n\n");
+
+    pthread_mutex_init(&res_A, NULL);
+    pthread_mutex_init(&res_B, NULL);
+
+    pthread_t t1, t2;
+    pthread_create(&t1, NULL, ordered_worker_1, NULL);
+    pthread_create(&t2, NULL, ordered_worker_2, NULL);
+
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    pthread_mutex_destroy(&res_A);
+    pthread_mutex_destroy(&res_B);
+    printf("\nDeadlock prevented successfully! Both threads acquired resources without circular deadlock.\n");
+}
+
+int main()
+{
+    run_producer_consumer();
+    run_deadlock_prevention();
+    return 0;
+}
