@@ -1,0 +1,146 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+
+#define MAX_TOKENS 16
+
+void parse_advanced_redirection(char *tokens[], char **append_file, char **stderr_file)
+{
+    *append_file = NULL;
+    *stderr_file = NULL;
+
+    int j = 0;
+    for (int i = 0; tokens[i] != NULL; i++)
+    {
+        if (strcmp(tokens[i], ">>") == 0)
+        {
+            if (tokens[i + 1] != NULL)
+            {
+                *append_file = tokens[i + 1];
+                i++;
+            }
+        }
+        else if (strcmp(tokens[i], "2>") == 0)
+        {
+            if (tokens[i + 1] != NULL)
+            {
+                *stderr_file = tokens[i + 1];
+                i++;
+            }
+        }
+        else
+        {
+            tokens[j++] = tokens[i];
+        }
+    }
+    tokens[j] = NULL;
+}
+
+void execute_with_advanced_redirection(char *tokens[])
+{
+    char *append_file = NULL;
+    char *stderr_file = NULL;
+
+    parse_advanced_redirection(tokens, &append_file, &stderr_file);
+
+    if (tokens[0] == NULL)
+    {
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        perror("fork failed");
+        return;
+    }
+
+    if (pid == 0)
+    {
+        if (append_file)
+        {
+            int app_fd = open(append_file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (app_fd < 0)
+            {
+                perror("append redirection failed");
+                exit(1);
+            }
+            dup2(app_fd, STDOUT_FILENO);
+            close(app_fd);
+        }
+
+        if (stderr_file)
+        {
+            int err_fd = open(stderr_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (err_fd < 0)
+            {
+                perror("stderr redirection failed");
+                exit(1);
+            }
+            dup2(err_fd, STDERR_FILENO);
+            close(err_fd);
+        }
+
+        execvp(tokens[0], tokens);
+        perror("execvp failed");
+        exit(1);
+    }
+    else
+    {
+        int status;
+        waitpid(pid, &status, 0);
+    }
+}
+
+void display_file(const char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+    if (!fp)
+    {
+        perror("display_file fopen failed");
+        return;
+    }
+    printf("Content of '%s':\n", filename);
+    char line[256];
+    while (fgets(line, sizeof(line), fp))
+    {
+        printf("  %s", line);
+    }
+    fclose(fp);
+}
+
+int main()
+{
+    const char *log_file = "app_log.txt";
+    const char *err_file = "error_log.txt";
+
+    unlink(log_file);
+    unlink(err_file);
+
+    printf("=== Part 1: Append Operator Redirection (>> preserving data) ===\n\n");
+
+    char *cmd1[] = {"printf", "[Log 1] System initialized.\n", ">>", (char *)log_file, NULL};
+    printf("Executing initial write via >>\n");
+    execute_with_advanced_redirection(cmd1);
+
+    char *cmd2[] = {"printf", "[Log 2] Secondary event recorded.\n", ">>", (char *)log_file, NULL};
+    printf("Executing append write via >>\n");
+    execute_with_advanced_redirection(cmd2);
+
+    display_file(log_file);
+
+    printf("\n=== Part 2: Standard Error Redirection (2> capturing stderr) ===\n\n");
+
+    char *cmd3[] = {"ls", "/non_existent_folder_skill14", "2>", (char *)err_file, NULL};
+    printf("Executing: ls /non_existent_folder_skill14 2> error_log.txt\n");
+    execute_with_advanced_redirection(cmd3);
+
+    display_file(err_file);
+
+    unlink(log_file);
+    unlink(err_file);
+    return 0;
+}
