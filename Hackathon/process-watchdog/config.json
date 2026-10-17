@@ -1,0 +1,24 @@
+{
+  "interval_sec": 1,
+  "log_file": "logs/watchdog.log",
+  "log_level": "INFO",
+  "stop_children_on_exit": true,
+  "processes": [
+    {
+      "name": "worker-a",
+      "cmd": "python3 demo/worker.py --name worker-a",
+      "output_file": "logs/worker-a.out",
+      "max_retries": 5,
+      "window_sec": 60,
+      "backoff_base_sec": 1,
+      "backoff_max_sec": 30
+    },
+    {
+      "name": "worker-b",
+      "cmd": "python3 demo/worker.py --name worker-b --crash-after 15",
+      "output_file": "logs/worker-b.out",
+      "max_retries": 5,
+      "window_sec": 60
+    }
+  ]
+}

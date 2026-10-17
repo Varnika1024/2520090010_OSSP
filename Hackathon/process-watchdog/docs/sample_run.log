@@ -1,0 +1,38 @@
+killing worker-a pid 183 with SIGKILL
+worker-a back as pid 267 after 1.118994151 s (interval 1s, backoff base 1s)
+watchdog exit code 0
+=== log
+2026-10-17 04:47:52,483 [INFO] watchdog started, monitoring 2 process(es), interval 1s
+2026-10-17 04:47:52,484 [INFO] [worker-a] started (pid 183)
+2026-10-17 04:47:52,489 [INFO] [worker-b] started (pid 184)
+2026-10-17 04:47:55,490 [WARNING] [worker-a] pid 183 terminated: killed by signal SIGKILL
+2026-10-17 04:47:55,490 [INFO] [worker-a] restarting in 1.0s
+2026-10-17 04:47:56,491 [INFO] [worker-a] restarted (pid 267)
+2026-10-17 04:48:08,496 [WARNING] [worker-b] pid 184 terminated: exited with code 1
+2026-10-17 04:48:08,496 [INFO] [worker-b] restarting in 1.0s
+2026-10-17 04:48:09,497 [INFO] [worker-b] restarted (pid 276)
+2026-10-17 04:48:10,598 [INFO] [worker-a] stopping pid 267
+2026-10-17 04:48:10,599 [INFO] [worker-b] stopping pid 276
+2026-10-17 04:48:10,600 [INFO] watchdog stopped
+=== leftovers
+none
+=== crashloop
+2026-10-17 04:48:10,718 [INFO] watchdog started, monitoring 1 process(es), interval 1s
+2026-10-17 04:48:10,719 [INFO] [crashloop] started (pid 280)
+2026-10-17 04:48:11,719 [WARNING] [crashloop] pid 280 terminated: exited with code 1
+2026-10-17 04:48:11,720 [INFO] [crashloop] restarting in 1.0s
+2026-10-17 04:48:12,721 [INFO] [crashloop] restarted (pid 281)
+2026-10-17 04:48:13,721 [WARNING] [crashloop] pid 281 terminated: exited with code 1
+2026-10-17 04:48:13,722 [INFO] [crashloop] restarting in 2.0s
+2026-10-17 04:48:15,723 [INFO] [crashloop] restarted (pid 282)
+2026-10-17 04:48:16,724 [WARNING] [crashloop] pid 282 terminated: exited with code 1
+2026-10-17 04:48:16,724 [INFO] [crashloop] restarting in 4.0s
+2026-10-17 04:48:20,726 [INFO] [crashloop] restarted (pid 283)
+2026-10-17 04:48:21,727 [WARNING] [crashloop] pid 283 terminated: exited with code 1
+2026-10-17 04:48:21,727 [INFO] [crashloop] restarting in 8.0s
+2026-10-17 04:48:29,730 [INFO] [crashloop] restarted (pid 284)
+2026-10-17 04:48:30,731 [WARNING] [crashloop] pid 284 terminated: exited with code 1
+2026-10-17 04:48:30,731 [ERROR] [crashloop] 5 failures within 60s, giving up (needs manual attention)
+2026-10-17 04:48:30,731 [ERROR] no active targets left, exiting
+2026-10-17 04:48:30,731 [INFO] watchdog stopped
+exit code 1
